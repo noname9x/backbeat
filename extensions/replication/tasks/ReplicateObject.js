@@ -1,26 +1,24 @@
 const async = require('async');
 const AWS = require('aws-sdk');
-const BackOff = require('backo');
 
 const errors = require('arsenal').errors;
 const jsutil = require('arsenal').jsutil;
 const ObjectMDLocation = require('arsenal').models.ObjectMDLocation;
-const VaultClient = require('vaultclient').Client;
-const { proxyPath } = require('../constants');
 
 const BackbeatClient = require('../../../lib/clients/BackbeatClient');
-const AccountAuthManager = require('./AccountAuthManager');
-const RoleAuthManager = require('./RoleAuthManager');
 const attachReqUids = require('../utils/attachReqUids');
+const BackbeatTask = require('../../../lib/tasks/BackbeatTask');
+// TODO move the following classes to better locations
+const AccountAuthManager = require('../queueProcessor/AccountAuthManager');
+const RoleAuthManager = require('../queueProcessor/RoleAuthManager');
 
 const MPU_CONC_LIMIT = 10;
-const BACKOFF_PARAMS = { min: 1000, max: 300000, jitter: 0.1, factor: 1.5 };
 
 function _extractAccountIdFromRole(role) {
     return role.split(':')[4];
 }
 
-class QueueProcessorTask {
+class ReplicateObject extends BackbeatTask {
     /**
      * Process a single replication entry
      *
@@ -28,7 +26,11 @@ class QueueProcessorTask {
      * @param {QueueProcessor} qp - queue processor instance
      */
     constructor(qp) {
-        Object.assign(this, qp.getStateVars());
+        const qpState = qp.getStateVars();
+        super({
+            retryTimeoutS: qpState.repConfig.queueProcessor.retryTimeoutS,
+        });
+        Object.assign(this, qpState);
 
         this.sourceRole = null;
         this.targetRole = null;
@@ -46,69 +48,19 @@ class QueueProcessorTask {
         }
         let vaultClient;
         if (where === 'source') {
-            vaultClient = this.sourceVault;
+            vaultClient = this.vaultClientCache.getClient('source:s3');
         } else { // target
             const { host, port } = this.destHosts.pickHost();
-            const key = `${host}:${port}`;
-            if (this.destVaults[key] === undefined) {
-                this.destVaults[key] = new VaultClient(
-                    host, port,
-                    undefined, undefined, undefined, undefined,
-                    undefined, undefined, undefined, undefined,
-                    proxyPath);
-            }
-            vaultClient = this.destVaults[key];
+            vaultClient = this.vaultClientCache.getClient('dest:s3',
+                                                          host, port);
         }
         return new RoleAuthManager(vaultClient, roleArn, log);
     }
 
-    _retry(args, done) {
-        const { actionDesc, entry,
-                actionFunc, shouldRetryFunc, onRetryFunc, log } = args;
-        const backoffCtx = new BackOff(BACKOFF_PARAMS);
-        let nbRetries = 0;
-        const startTime = Date.now();
-        const self = this;
-
-        function _handleRes(...args) {
-            const err = args[0];
-            if (!err) {
-                if (nbRetries > 0) {
-                    log.info(`succeeded to ${actionDesc} after retries`,
-                             { entry: entry.getLogInfo(), nbRetries });
-                }
-                return done(...args);
-            }
-            if (!shouldRetryFunc(err)) {
-                return done(err);
-            }
-            if (onRetryFunc) {
-                onRetryFunc(err);
-            }
-
-            const now = Date.now();
-            if (now > (startTime +
-                       self.repConfig.queueProcessor.retryTimeoutS * 1000)) {
-                log.error(`retried for too long to ${actionDesc}, giving up`,
-                    { entry: entry.getLogInfo(),
-                        nbRetries,
-                        retryTotalMs: `${now - startTime}` });
-                return done(err);
-            }
-            const retryDelayMs = backoffCtx.duration();
-            log.info(`temporary failure to ${actionDesc}, scheduled retry`,
-                { entry: entry.getLogInfo(),
-                    nbRetries, retryDelay: `${retryDelayMs}ms` });
-            nbRetries += 1;
-            return setTimeout(() => actionFunc(_handleRes), retryDelayMs);
-        }
-        actionFunc(_handleRes);
-    }
-
     _setupRoles(entry, log, cb) {
-        this._retry({
+        this.retry({
             actionDesc: 'get bucket replication configuration',
-            entry,
+            logFields: { entry: entry.getLogInfo() },
             actionFunc: done => this._setupRolesOnce(entry, log, done),
             // Rely on AWS SDK notion of retryable error to decide if
             // we should set the entry replication status to FAILED
@@ -126,9 +78,9 @@ class QueueProcessorTask {
         }
         this._setupDestClients(this.targetRole, log);
 
-        return this._retry({
+        return this.retry({
             actionDesc: 'lookup target account attributes',
-            entry: destEntry,
+            logFields: { entry: destEntry.getLogInfo() },
             actionFunc: done => this._setTargetAccountMdOnce(
                 destEntry, targetRole, log, done),
             // this call uses our own Vault client which does not set
@@ -145,26 +97,27 @@ class QueueProcessorTask {
     }
 
     _getAndPutPart(sourceEntry, destEntry, part, log, cb) {
-        this._retry({
+        const partLogger = this.logger.newRequestLogger(log.getUids());
+        this.retry({
             actionDesc: 'stream part data',
-            entry: sourceEntry,
+            logFields: { entry: sourceEntry.getLogInfo(), part },
             actionFunc: done => this._getAndPutPartOnce(
-                sourceEntry, destEntry, part, log, done),
+                sourceEntry, destEntry, part, partLogger, done),
             shouldRetryFunc: err => err.retryable,
             onRetryFunc: err => {
                 if (err.origin === 'target') {
                     this.destHosts.pickNextHost();
-                    this._setupDestClients(this.targetRole, log);
+                    this._setupDestClients(this.targetRole, partLogger);
                 }
             },
-            log,
+            log: partLogger,
         }, cb);
     }
 
     _putMetadata(where, entry, mdOnly, log, cb) {
-        this._retry({
+        this.retry({
             actionDesc: `update metadata on ${where}`,
-            entry,
+            logFields: { entry: entry.getLogInfo() },
             actionFunc: done => this._putMetadataOnce(where, entry, mdOnly,
                                                       log, done),
             shouldRetryFunc: err => err.retryable,
@@ -179,9 +132,9 @@ class QueueProcessorTask {
     }
 
     _updateReplicationStatus(updatedSourceEntry, params, cb) {
-        this._retry({
+        this.retry({
             actionDesc: 'write replication status',
-            entry: updatedSourceEntry,
+            logFields: { entry: updatedSourceEntry.getLogInfo() },
             actionFunc: done => this._updateReplicationStatusOnce(
                 updatedSourceEntry, params, done),
             shouldRetryFunc: err => err.retryable,
@@ -286,7 +239,7 @@ class QueueProcessorTask {
                             entry: destEntry.getLogInfo(),
                             origin: 'target',
                             peer: (this.destConfig.auth.type === 'role' ?
-                                       this.destConfig.auth.vault : undefined),
+                                   this.destConfig.auth.vault : undefined),
                             error: err.message });
                     return cb(err);
                 }
@@ -337,6 +290,7 @@ class QueueProcessorTask {
             log.error('an error occurred on getObject from S3',
                 { method: 'QueueProcessor._getAndPutData',
                     entry: sourceEntry.getLogInfo(),
+                    part,
                     origin: 'source',
                     peer: this.sourceConfig.s3,
                     error: err.message,
@@ -353,12 +307,13 @@ class QueueProcessorTask {
             log.error('an error occurred when streaming data from S3',
                 { method: 'QueueProcessor._getAndPutData',
                     entry: destEntry.getLogInfo(),
+                    part,
                     origin: 'source',
                     peer: this.sourceConfig.s3,
                     error: err.message });
             return doneOnce(err);
         });
-        log.debug('putting data', { entry: destEntry.getLogInfo() });
+        log.debug('putting data', { entry: destEntry.getLogInfo(), part });
         const destReq = this.backbeatDest.putData({
             Bucket: destEntry.getBucket(),
             Key: destEntry.getObjectKey(),
@@ -375,6 +330,7 @@ class QueueProcessorTask {
                 log.error('an error occurred on putData to S3',
                     { method: 'QueueProcessor._getAndPutData',
                         entry: destEntry.getLogInfo(),
+                        part,
                         origin: 'target',
                         peer: this.destBackbeatHost,
                         error: err.message });
@@ -618,4 +574,4 @@ class QueueProcessorTask {
     }
 }
 
-module.exports = QueueProcessorTask;
+module.exports = ReplicateObject;

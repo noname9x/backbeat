@@ -4,14 +4,6 @@ const joi = require('joi');
 const { hostPortJoi, bootstrapListJoi, logJoi } =
     require('../lib/config/configItems.joi.js');
 
-const authJoi = joi.object({
-    type: joi.alternatives().try('account', 'role').required(),
-    account: joi.string(),
-    vault: hostPortJoi.keys({
-        adminPort: joi.number().greater(0).optional(),
-    }),
-});
-
 const transportJoi = joi.alternatives().try('http', 'https')
     .default('http');
 
@@ -39,11 +31,29 @@ const joiSchema = {
             source: {
                 transport: transportJoi,
                 s3: hostPortJoi.required(),
-                auth: authJoi.required(),
+                auth: joi.object({
+                    type: joi.alternatives().try('account', 'role').required(),
+                    account: joi.string(),
+                    vault: {
+                        host: joi.string().required(),
+                        port: joi.number().greater(0).required(),
+                        adminPort: joi.number().greater(0).optional(),
+                        adminCredentialsFile: joi.string().optional(),
+                    },
+                }).required(),
             },
             destination: {
                 transport: transportJoi,
-                auth: authJoi.required(),
+                auth: joi.object({
+                    type: joi.alternatives().try('account', 'role').required(),
+                    account: joi.string(),
+                    vault: {
+                        host: joi.string().optional(),
+                        port: joi.number().greater(0).optional(),
+                        adminPort: joi.number().greater(0).optional(),
+                        adminCredentialsFile: joi.string().optional(),
+                    },
+                }).required(),
                 bootstrapList: bootstrapListJoi,
                 certFilePaths: joi.object({
                     key: joi.string().required(),

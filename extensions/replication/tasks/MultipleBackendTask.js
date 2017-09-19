@@ -4,12 +4,12 @@ const errors = require('arsenal').errors;
 const jsutil = require('arsenal').jsutil;
 const ObjectMDLocation = require('arsenal').models.ObjectMDLocation;
 
-const QueueProcessorTask = require('./QueueProcessorTask');
+const ReplicateObject = require('./ReplicateObject');
 const attachReqUids = require('../utils/attachReqUids');
 
 const MPU_CONC_LIMIT = 10;
 
-class MultipleBackendTask extends QueueProcessorTask {
+class MultipleBackendTask extends ReplicateObject {
 
     _setupRolesOnce(entry, log, cb) {
         log.debug('getting bucket replication', { entry: entry.getLogInfo() });

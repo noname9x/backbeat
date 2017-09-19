@@ -1,6 +1,8 @@
 const async = require('async');
 const { S3, IAM } = require('aws-sdk');
 
+const BackbeatTask = require('../../../lib/tasks/BackbeatTask');
+
 const trustPolicy = {
     Version: '2012-10-17',
     Statement: [
@@ -64,15 +66,8 @@ function _setupS3Client(transport, endpoint, credentials) {
 
 function _setupIAMClient(where, transport, endpoint, credentials) {
     const httpOptions = { timeout: 1000 };
-    let iamEndpoint = endpoint;
-    if (where === 'target') {
-        const [host] = endpoint.split(':');
-        const destIAMPort = 8600;
-        iamEndpoint = `${host}:${destIAMPort}`;
-    }
-
     return new IAM({
-        endpoint: `${transport}://${iamEndpoint}`,
+        endpoint: `${transport}://${endpoint}`,
         sslEnabled: transport === 'https',
         credentials,
         maxRetries: 0,
@@ -82,7 +77,7 @@ function _setupIAMClient(where, transport, endpoint, credentials) {
     });
 }
 
-class SetupReplication {
+class SetupReplication extends BackbeatTask {
     /**
      * This class sets up two buckets for replication.
      * @constructor
@@ -103,15 +98,31 @@ class SetupReplication {
      * @param {RoundRobin} params.target.hosts - destination hosts
      * @param {String} [params.target.transport] - transport protocol for
      *   target (http/https)
+     * @param {Boolean} [params.checkSanity=false] - whether to check
+     *   sanity of the config after setup, in case something would
+     *   have gone wrong but unnoticed
+     * @param {Number} [params.retryTimeoutS=300] - timeout for
+     *   request retries
+     * @param {Boolean} [params.skipSourceBucketCreation=false] - can
+     *   be set to true if the source bucket is guaranteed to exist to
+     *   spare a request
      * @param {Object} params.log - werelogs request logger object
      */
     constructor(params) {
-        const { source, target, log } = params;
+        const { source, target, checkSanity,
+                retryTimeoutS, skipSourceBucketCreation, log } = params;
+        super({ retryTimeoutS });
         this._log = log;
         this._sourceBucket = source.bucket;
         this._targetBucket = target.bucket;
+        this._checkSanityEnabled = checkSanity || false;
+        this._skipSourceBucketCreation = skipSourceBucketCreation || false;
         this.destHosts = target.hosts;
         const destHost = this.destHosts.pickHost();
+        // XXX use target port through nginx gateway
+        // Hard-code port 8600 for now on IAM client while other vault
+        // clients go through the gateway (signature mismatch issue).
+        const destPort = (target.vault && target.vault.adminPort) || 8600;
         this._s3Clients = {
             source: _setupS3Client(source.transport,
                 `${source.s3.host}:${source.s3.port}`, source.credentials),
@@ -122,9 +133,8 @@ class SetupReplication {
             source: _setupIAMClient('source', source.transport,
                 `${source.vault.host}:${source.vault.adminPort}`,
                 source.credentials),
-            // XXX use target port through nginx gateway
             target: _setupIAMClient('target', target.transport,
-                `${destHost.host}:${source.vault.adminPort}`,
+                `${destHost.host}:${destPort}`,
                 target.credentials),
         };
     }
@@ -278,8 +288,21 @@ class SetupReplication {
     }
 
     _createBucket(where, cb) {
-        const bucket = where === 'source' ? this._sourceBucket :
-            this._targetBucket;
+        if (where === 'source' && this._skipSourceBucketCreation) {
+            return process.nextTick(() => cb());
+        }
+        return this.retry({
+            actionDesc: `create ${where} bucket`,
+            logFields: {},
+            actionFunc: done => this._createBucketOnce(where, done),
+            shouldRetryFunc: err => err.retryable,
+            log: this._log,
+        }, cb);
+    }
+
+    _createBucketOnce(where, cb) {
+        const bucket = where === 'source' ?
+                  this._sourceBucket : this._targetBucket;
         this._s3Clients[where].createBucket({ Bucket: bucket }, (err, res) => {
             if (err && err.code !== 'BucketAlreadyOwnedByYou') {
                 this._log.error('error creating a bucket', {
@@ -311,6 +334,16 @@ class SetupReplication {
     }
 
     _createRole(where, cb) {
+        this.retry({
+            actionDesc: `create ${where} role`,
+            logFields: {},
+            actionFunc: done => this._createRoleOnce(where, done),
+            shouldRetryFunc: err => err.retryable,
+            log: this._log,
+        }, cb);
+    }
+
+    _createRoleOnce(where, cb) {
         const params = {
             AssumeRolePolicyDocument: JSON.stringify(trustPolicy),
             RoleName: `bb-replication-${Date.now()}`,
@@ -331,13 +364,23 @@ class SetupReplication {
             this._log.debug('Created role', {
                 bucket: where === 'source' ? this._sourceBucket :
                     this._targetBucket,
-                method: '_createRole',
+                method: 'SetupReplication._createRole',
             });
             return cb(null, res);
         });
     }
 
     _createPolicy(where, cb) {
+        this.retry({
+            actionDesc: `create ${where} policy`,
+            logFields: {},
+            actionFunc: done => this._createPolicyOnce(where, done),
+            shouldRetryFunc: err => err.retryable,
+            log: this._log,
+        }, cb);
+    }
+
+    _createPolicyOnce(where, cb) {
         const params = {
             PolicyDocument: JSON.stringify(
                 _buildResourcePolicy(this._sourceBucket, this._targetBucket)),
@@ -357,13 +400,23 @@ class SetupReplication {
             this._log.debug('Created policy', {
                 bucket: where === 'source' ? this._sourceBucket :
                     this._targetBucket,
-                method: '_createPolicy',
+                method: 'SetupReplication._createPolicy',
             });
             return cb(null, res);
         });
     }
 
     _enableVersioning(where, cb) {
+        this.retry({
+            actionDesc: `enable versioning on ${where}`,
+            logFields: {},
+            actionFunc: done => this._enableVersioningOnce(where, done),
+            shouldRetryFunc: err => err.retryable,
+            log: this._log,
+        }, cb);
+    }
+
+    _enableVersioningOnce(where, cb) {
         const bucket = where === 'source' ? this._sourceBucket :
             this._targetBucket;
         const params = {
@@ -386,13 +439,25 @@ class SetupReplication {
             this._log.debug('Versioning enabled', {
                 bucket: where === 'source' ? this._sourceBucket :
                     this._targetBucket,
-                method: '_enableVersioning',
+                method: 'SetupReplication._enableVersioning',
             });
             return cb(null, res);
         });
     }
 
     _attachResourcePolicy(policyArn, roleName, where, cb) {
+        this.retry({
+            actionDesc: `attach resource policy on ${where}`,
+            logFields: {},
+            actionFunc: done =>
+                this._attachResourcePolicyOnce(policyArn, roleName,
+                                               where, done),
+            shouldRetryFunc: err => err.retryable,
+            log: this._log,
+        }, cb);
+    }
+
+    _attachResourcePolicyOnce(policyArn, roleName, where, cb) {
         const params = {
             PolicyArn: policyArn,
             RoleName: roleName,
@@ -411,13 +476,23 @@ class SetupReplication {
             this._log.debug('Attached resource policy', {
                 bucket: where === 'source' ? this._sourceBucket :
                     this._targetBucket,
-                method: '_attachResourcePolicy',
+                method: 'SetupReplication._attachResourcePolicy',
             });
             return cb(null, res);
         });
     }
 
     _enableReplication(roleArns, cb) {
+        this.retry({
+            actionDesc: 'enable bucket replication',
+            logFields: {},
+            actionFunc: done => this._enableReplicationOnce(roleArns, done),
+            shouldRetryFunc: err => err.retryable,
+            log: this._log,
+        }, cb);
+    }
+
+    _enableReplicationOnce(roleArns, cb) {
         const params = {
             Bucket: this._sourceBucket,
             ReplicationConfiguration: {
@@ -441,13 +516,17 @@ class SetupReplication {
                 return cb(err);
             }
             this._log.debug('Bucket replication enabled', {
-                method: '_enableReplication',
+                method: 'SetupReplication._enableReplication',
             });
             return cb(null, res);
         });
     }
 
     setupReplication(cb) {
+        let sourceRole;
+        let targetRole;
+        let sourcePolicyArn;
+        let targetPolicyArn;
         return async.waterfall([
             next => async.series({
                 sourceBucket: done => this._createBucket('source', done),
@@ -458,10 +537,10 @@ class SetupReplication {
                 targetPolicy: done => this._createPolicy('target', done),
             }, next),
             (data, next) => {
-                const sourceRole = data.sourceRole.Role;
-                const targetRole = data.targetRole.Role;
-                const sourcePolicyArn = data.sourcePolicy.Policy.Arn;
-                const targetPolicyArn = data.targetPolicy.Policy.Arn;
+                sourceRole = data.sourceRole.Role;
+                targetRole = data.targetRole.Role;
+                sourcePolicyArn = data.sourcePolicy.Policy.Arn;
+                targetPolicyArn = data.targetPolicy.Policy.Arn;
                 const roleArns = `${sourceRole.Arn},${targetRole.Arn}`;
                 async.series([
                     done => this._enableVersioning('source', done),
@@ -473,8 +552,16 @@ class SetupReplication {
                     done => this._enableReplication(roleArns, done),
                 ], next);
             },
-            (args, next) => this.checkSanity(next),
-        ], cb);
+            (args, next) => (this._checkSanityEnabled ?
+                             this.checkSanity(next) : next()),
+        ], err => {
+            if (err) {
+                return cb(err);
+            }
+            return cb(null, { sourceRoleArn: sourceRole.Arn,
+                              targetRoleArn: targetRole.Arn,
+                              sourcePolicyArn, targetPolicyArn });
+        });
     }
 }
 

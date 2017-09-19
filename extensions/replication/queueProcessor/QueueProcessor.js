@@ -6,14 +6,19 @@ const Logger = require('werelogs').Logger;
 
 const errors = require('arsenal').errors;
 const RoundRobin = require('arsenal').network.RoundRobin;
-const VaultClient = require('vaultclient').Client;
 
 const BackbeatConsumer = require('../../../lib/BackbeatConsumer');
+const VaultClientCache = require('../../../lib/clients/VaultClientCache');
 const QueueEntry = require('../utils/QueueEntry');
 const ReplicationTaskScheduler = require('./ReplicationTaskScheduler');
-const QueueProcessorTask = require('./QueueProcessorTask');
-const MultipleBackendTask = require('./MultipleBackendTask');
+const ReplicateObject = require('../tasks/ReplicateObject');
+const MultipleBackendTask = require('../tasks/MultipleBackendTask');
+const EchoBucket = require('../tasks/EchoBucket');
 
+const ObjectQueueEntry = require('../utils/ObjectQueueEntry');
+const BucketQueueEntry = require('../utils/BucketQueueEntry');
+
+const { proxyVaultPath, proxyIAMPath } = require('../constants');
 
 /**
 * Given that the largest object JSON from S3 is about 1.6 MB and adding some
@@ -63,24 +68,92 @@ class QueueProcessor {
         this.sourceHTTPAgent = new http.Agent({ keepAlive: true });
         this.destHTTPAgent = new http.Agent({ keepAlive: true });
 
+        this.vaultClientCache = new VaultClientCache();
+
         // FIXME support multiple destination sites
         if (destConfig.bootstrapList.length > 0) {
             this.destHosts =
                 new RoundRobin(destConfig.bootstrapList[0].servers,
                                { defaultPort: 80 });
+            if (destConfig.bootstrapList[0].echo) {
+                if (process.env.BACKBEAT_ECHO_TEST_MODE === '1') {
+                    this.logger.info('starting in echo mode',
+                                     { testMode: true });
+                } else {
+                    this.logger.info('starting in echo mode');
+                }
+                this.accountCredsCache = {};
+            }
         } else {
             this.destHosts = null;
         }
 
+        let sourceAdminVaultConfigured = false;
+        let destAdminVaultConfigured = false;
+
         if (sourceConfig.auth.type === 'role') {
-            const { host, port } = sourceConfig.auth.vault;
-            this.sourceVault = new VaultClient(host, port);
+            const { host, port, adminPort, adminCredentialsFile }
+                      = sourceConfig.auth.vault;
+            this.vaultClientCache
+                .setHost('source:s3', host)
+                .setPort('source:s3', port);
+            if (adminCredentialsFile) {
+                this.vaultClientCache
+                    .setHost('source:admin', host)
+                    .setPort('source:admin', adminPort)
+                    .loadAdminCredentialsFromFile('source:admin',
+                                                  adminCredentialsFile);
+                sourceAdminVaultConfigured = true;
+            }
         }
         if (destConfig.auth.type === 'role') {
-            // vault client cache per destination
-            this.destVaults = {};
+            if (destConfig.auth.vault) {
+                const { host, port, adminPort, adminCredentialsFile }
+                          = destConfig.auth.vault;
+                if (host) {
+                    this.vaultClientCache.setHost('dest:s3', host);
+                }
+                if (port) {
+                    this.vaultClientCache.setPort('dest:s3', port);
+                }
+                if (adminCredentialsFile) {
+                    if (host) {
+                        this.vaultClientCache.setHost('dest:admin', host);
+                    }
+                    if (adminPort) {
+                        this.vaultClientCache.setPort('dest:admin', adminPort);
+                    } else {
+                        // if dest vault admin port not configured, go
+                        // through nginx proxy
+                        this.vaultClientCache.setProxyPath('dest:admin',
+                                                           proxyIAMPath);
+                    }
+                    this.vaultClientCache.loadAdminCredentialsFromFile(
+                        'dest:admin', adminCredentialsFile);
+                    destAdminVaultConfigured = true;
+                }
+            }
+            if (!destConfig.auth.vault ||
+                !destConfig.auth.vault.port) {
+                // if dest vault port not configured, go through nginx
+                // proxy
+                this.vaultClientCache.setProxyPath('dest:s3',
+                                                   proxyVaultPath);
+            }
         }
 
+        if (this.destConfig.bootstrapList.length > 0 &&
+            this.destConfig.bootstrapList[0].echo) {
+            if (!sourceAdminVaultConfigured) {
+                throw new Error('echo mode not properly configured: missing ' +
+                                'credentials for source Vault admin client');
+            }
+            if (!destAdminVaultConfigured) {
+                throw new Error('echo mode not properly configured: missing ' +
+                                'credentials for destination Vault ' +
+                                'admin client');
+            }
+        }
         this.taskScheduler = new ReplicationTaskScheduler(
             (ctx, done) => ctx.task.processQueueEntry(ctx.entry, done));
     }
@@ -93,8 +166,8 @@ class QueueProcessor {
             destHosts: this.destHosts,
             sourceHTTPAgent: this.sourceHTTPAgent,
             destHTTPAgent: this.destHTTPAgent,
-            sourceVault: this.sourceVault,
-            destVaults: this.destVaults,
+            vaultClientCache: this.vaultClientCache,
+            accountCredsCache: this.accountCredsCache,
             logger: this.logger,
         };
     }
@@ -132,13 +205,29 @@ class QueueProcessor {
                               { error: sourceEntry.error });
             return process.nextTick(() => done(errors.InternalError));
         }
-        return this.taskScheduler.push({
-            task: sourceEntry.getReplicationStorageType() === 'aws_s3' ?
-                new MultipleBackendTask(this) : new QueueProcessorTask(this),
-            entry: sourceEntry,
-        },
-        `${sourceEntry.getBucket()}/${sourceEntry.getObjectKey()}`,
-        done);
+        let task;
+        if (sourceEntry instanceof BucketQueueEntry) {
+            // FIXME support multiple destinations
+            if (this.destConfig.bootstrapList.length > 0 &&
+                this.destConfig.bootstrapList[0].echo) {
+                task = new EchoBucket(this);
+            }
+            // ignore bucket entry if echo mode disabled
+        } else if (sourceEntry instanceof ObjectQueueEntry) {
+            if (sourceEntry.getReplicationStorageType() === 'aws_s3') {
+                task = new MultipleBackendTask(this);
+            } else {
+                task = new ReplicateObject(this);
+            }
+        }
+        if (task) {
+            return this.taskScheduler.push({ task, entry: sourceEntry },
+                                           sourceEntry.getCanonicalKey(),
+                                           done);
+        }
+        this.logger.debug('skip source entry',
+                          { entry: sourceEntry.getLogInfo() });
+        return process.nextTick(done);
     }
 }
 

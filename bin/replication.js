@@ -48,6 +48,7 @@ function _createSetupReplication(command, options, log) {
             hosts: new RoundRobin(destination.bootstrapList[0].servers),
             transport: destination.transport,
         },
+        checkSanity: true,
         log,
     });
 }
