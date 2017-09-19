@@ -4,12 +4,12 @@ const errors = require('arsenal').errors;
 const jsutil = require('arsenal').jsutil;
 const ObjectMDLocation = require('arsenal').models.ObjectMDLocation;
 
-const QueueProcessorTask = require('./QueueProcessorTask');
+const ReplicateObject = require('./ReplicateObject');
 const attachReqUids = require('../utils/attachReqUids');
 
 const MPU_CONC_LIMIT = 10;
 
-class MultipleBackendTask extends QueueProcessorTask {
+class MultipleBackendTask extends ReplicateObject {
 
     _setupRolesOnce(entry, log, cb) {
         log.debug('getting bucket replication', { entry: entry.getLogInfo() });
@@ -89,9 +89,9 @@ class MultipleBackendTask extends QueueProcessorTask {
     }
 
     _getAndPutMPUPart(sourceEntry, destEntry, part, uploadId, log, cb) {
-        this._retry({
+        this.retry({
             actionDesc: 'stream part data',
-            entry: sourceEntry,
+            logFields: { entry: sourceEntry.getLogInfo() },
             actionFunc: done => this._getAndPutMPUPartOnce(sourceEntry,
                 destEntry, part, uploadId, log, done),
             shouldRetryFunc: err => err.retryable,
@@ -173,9 +173,9 @@ class MultipleBackendTask extends QueueProcessorTask {
     }
 
     _getAndPutMultipartUpload(sourceEntry, destEntry, part, uploadId, log, cb) {
-        this._retry({
+        this.retry({
             actionDesc: 'stream part data',
-            entry: sourceEntry,
+            logFields: { entry: sourceEntry.getLogInfo() },
             actionFunc: done => this._getAndPutMultipartUploadOnce(sourceEntry,
                 destEntry, part, uploadId, log, done),
             shouldRetryFunc: err => err.retryable,
@@ -381,9 +381,9 @@ class MultipleBackendTask extends QueueProcessorTask {
     }
 
     _getAndPutObjectTagging(sourceEntry, destEntry, log, cb) {
-        this._retry({
+        this.retry({
             actionDesc: 'send object tagging XML data',
-            entry: sourceEntry,
+            logFields: { entry: sourceEntry.getLogInfo() },
             actionFunc: done => this._getAndPutObjectTaggingOnce(
                sourceEntry, destEntry, log, done),
             shouldRetryFunc: err => err.retryable,
@@ -490,9 +490,9 @@ class MultipleBackendTask extends QueueProcessorTask {
     }
 
     _deleteObjectTagging(sourceEntry, destEntry, log, cb) {
-        this._retry({
+        this.retry({
             actionDesc: 'delete object tagging',
-            entry: sourceEntry,
+            logFields: { entry: sourceEntry.getLogInfo() },
             actionFunc: done => this._deleteObjectTaggingOnce(sourceEntry,
                 destEntry, log, done),
             shouldRetryFunc: err => err.retryable,
@@ -553,9 +553,9 @@ class MultipleBackendTask extends QueueProcessorTask {
     }
 
     _putDeleteMarker(sourceEntry, destEntry, log, cb) {
-        this._retry({
+        this.retry({
             actionDesc: 'put delete marker',
-            entry: sourceEntry,
+            logFields: { entry: sourceEntry.getLogInfo() },
             actionFunc: done => this._putDeleteMarkerOnce(
                 sourceEntry, destEntry, log, done),
             shouldRetryFunc: err => err.retryable,
