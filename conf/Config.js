@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const joi = require('joi');
 
+const extensions = require('../extensions');
 const backbeatConfigJoi = require('./config.joi.js');
 
 class Config {
@@ -14,15 +15,15 @@ class Config {
          */
         this._basePath = __dirname;
         if (process.env.BACKBEAT_CONFIG_FILE !== undefined) {
-            this.configPath = process.env.BACKBEAT_CONFIG_FILE;
+            this._configPath = process.env.BACKBEAT_CONFIG_FILE;
         } else {
-            this.configPath = path.join(this._basePath, 'config.json');
+            this._configPath = path.join(this._basePath, 'config.json');
         }
 
         let config;
         try {
-            const data = fs.readFileSync(this.configPath,
-              { encoding: 'utf-8' });
+            const data = fs.readFileSync(this._configPath,
+                                         { encoding: 'utf-8' });
             config = JSON.parse(data);
         } catch (err) {
             throw new Error(`could not parse config file: ${err.message}`);
@@ -31,33 +32,31 @@ class Config {
         const parsedConfig = joi.attempt(config, backbeatConfigJoi,
                                          'invalid backbeat config');
 
+        if (parsedConfig.extensions) {
+            Object.keys(parsedConfig.extensions).forEach(extName => {
+                const index = extensions[extName];
+                if (!index) {
+                    throw new Error(`configured extension ${extName}: ` +
+                                    'not found in extensions directory');
+                }
+                if (index.configValidator) {
+                    const extConfig = parsedConfig.extensions[extName];
+                    const validatedConfig =
+                              index.configValidator(this, extConfig);
+                    parsedConfig.extensions[extName] = validatedConfig;
+                }
+            });
+        }
         // config is validated, safe to assign directly to the config object
         Object.assign(this, parsedConfig);
+    }
 
-        if (this.extensions !== undefined &&
-            this.extensions.replication !== undefined) {
-            // additional target certs checks
-            const { certFilePaths } = this.extensions.replication.destination;
-            const { key, cert, ca } = certFilePaths;
+    getBasePath() {
+        return this._basePath;
+    }
 
-            const makePath = value => (value.startsWith('/') ?
-                                       value : `${this._basePath}/${value}`);
-            const keypath = makePath(key);
-            const certpath = makePath(cert);
-            let capath = undefined;
-            fs.accessSync(keypath, fs.F_OK | fs.R_OK);
-            fs.accessSync(certpath, fs.F_OK | fs.R_OK);
-            if (ca) {
-                capath = makePath(ca);
-                fs.accessSync(capath, fs.F_OK | fs.R_OK);
-            }
-
-            this.extensions.replication.destination.https = {
-                cert: fs.readFileSync(certpath, 'ascii'),
-                key: fs.readFileSync(keypath, 'ascii'),
-                ca: ca ? fs.readFileSync(capath, 'ascii') : undefined,
-            };
-        }
+    getConfigPath() {
+        return this._configPath;
     }
 }
 
