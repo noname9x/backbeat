@@ -8,8 +8,8 @@ JQ_FILTERS_CONFIG=\
 ".zookeeper.connectionString=\"zookeeper:2181/backbeat\" | \
  .zookeeper.autoCreateNamespace=true | \
  .kafka.hosts=\"kafka:9092\" | \
+ .queuePopulator.dmd.host=\"cloudserver-metadata\" | \
  .extensions.replication.source.s3.host=\"cloudserver-front\" | \
- .extensions.replication.source.dmd.host=\"cloudserver-metadata\" | \
  .extensions.replication.destination.bootstrapList=[]"
 
 
