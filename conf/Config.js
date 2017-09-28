@@ -31,33 +31,27 @@ class Config {
         const parsedConfig = joi.attempt(config, backbeatConfigJoi,
                                          'invalid backbeat config');
 
+        if (parsedConfig.extensions) {
+            Object.keys(parsedConfig.extensions).forEach(extName => {
+                const index = require(`../extensions/${extName}/index.js`);
+                if (index.configValidator) {
+                    const extConfig = parsedConfig.extensions[extName];
+                    const validatedConfig =
+                              index.configValidator(this, extConfig);
+                    parsedConfig.extensions[extName] = validatedConfig;
+                }
+            });
+        }
         // config is validated, safe to assign directly to the config object
         Object.assign(this, parsedConfig);
+    }
 
-        if (this.extensions !== undefined &&
-            this.extensions.replication !== undefined) {
-            // additional target certs checks
-            const { certFilePaths } = this.extensions.replication.destination;
-            const { key, cert, ca } = certFilePaths;
+    getBasePath() {
+        return this._basePath;
+    }
 
-            const makePath = value => (value.startsWith('/') ?
-                                       value : `${this._basePath}/${value}`);
-            const keypath = makePath(key);
-            const certpath = makePath(cert);
-            let capath = undefined;
-            fs.accessSync(keypath, fs.F_OK | fs.R_OK);
-            fs.accessSync(certpath, fs.F_OK | fs.R_OK);
-            if (ca) {
-                capath = makePath(ca);
-                fs.accessSync(capath, fs.F_OK | fs.R_OK);
-            }
-
-            this.extensions.replication.destination.https = {
-                cert: fs.readFileSync(certpath, 'ascii'),
-                key: fs.readFileSync(keypath, 'ascii'),
-                ca: ca ? fs.readFileSync(capath, 'ascii') : undefined,
-            };
-        }
+    getConfigPath() {
+        return this.configPath;
     }
 }
 
