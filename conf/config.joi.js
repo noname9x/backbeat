@@ -34,6 +34,9 @@ const joiSchema = {
         }),
     },
     log: logJoi,
+    metrics: {
+        topic: joi.string().required(),
+    },
     extensions: {
         replication: {
             source: {
@@ -59,6 +62,16 @@ const joiSchema = {
                 concurrency: joi.number().greater(0).default(10),
             },
         },
+    },
+    redis: {
+        name: joi.string().required(),
+        password: joi.string().allow(''),
+        sentinels: joi.array().items(
+            joi.object({
+                host: joi.string().required(),
+                port: joi.number().required(),
+            })
+        ),
     },
 };
 

@@ -9,11 +9,12 @@ const RoundRobin = require('arsenal').network.RoundRobin;
 const VaultClient = require('vaultclient').Client;
 
 const BackbeatConsumer = require('../../../lib/BackbeatConsumer');
-const QueueEntry = require('../utils/QueueEntry');
+const QueueEntry = require('../../../lib/models/QueueEntry');
 const ReplicationTaskScheduler = require('./ReplicationTaskScheduler');
 const QueueProcessorTask = require('./QueueProcessorTask');
 const MultipleBackendTask = require('./MultipleBackendTask');
 
+const { metricsExtension, metricsTypeProcessed } = require('../constants');
 
 /**
 * Given that the largest object JSON from S3 is about 1.6 MB and adding some
@@ -33,7 +34,7 @@ class QueueProcessor {
      *
      * @constructor
      * @param {Object} zkConfig - zookeeper configuration object
-     * @param {string} zkConfig.connectionString - zookeeper connection string
+     * @param {String} zkConfig.connectionString - zookeeper connection string
      *   as "host:port[/chroot]"
      * @param {Object} sourceConfig - source S3 configuration
      * @param {Object} sourceConfig.s3 - s3 endpoint configuration object
@@ -49,12 +50,14 @@ class QueueProcessor {
      * @param {String} repConfig.queueProcessor.retryTimeoutS -
      *   number of seconds before giving up retries of an entry
      *   replication
+     * @param {MetricsProducer} mProducer - instance of metrics producer
      */
-    constructor(zkConfig, sourceConfig, destConfig, repConfig) {
+    constructor(zkConfig, sourceConfig, destConfig, repConfig, mProducer) {
         this.zkConfig = zkConfig;
         this.sourceConfig = sourceConfig;
         this.destConfig = destConfig;
         this.repConfig = repConfig;
+        this._mProducer = mProducer;
         this.destHosts = null;
 
         this.logger = new Logger('Backbeat:Replication:QueueProcessor');
@@ -112,6 +115,17 @@ class QueueProcessor {
         });
         consumer.on('error', () => {});
         consumer.subscribe();
+
+        consumer.on('metrics', data => {
+            // i.e. data = { my-bucket: { ops: 1, bytes: 124 } }
+            this._mProducer.publishMetrics(data, metricsTypeProcessed,
+                metricsExtension, err => {
+                    this.logger.trace('error occurred in publishing metrics', {
+                        error: err,
+                        method: 'QueueProcessor.start',
+                    });
+                });
+        });
 
         this.logger.info('queue processor is ready to consume ' +
                          'replication entries');
