@@ -20,6 +20,9 @@
             "port": 9990
         }
     },
+    "metrics": {
+        "topic": "backbeat-metrics"
+    },
     "extensions": {
         "replication": {
             "source": {
