@@ -13,7 +13,7 @@ const QueueEntry = require('../utils/QueueEntry');
 const ReplicationTaskScheduler = require('./ReplicationTaskScheduler');
 const QueueProcessorTask = require('./QueueProcessorTask');
 const MultipleBackendTask = require('./MultipleBackendTask');
-
+const MetricsProducer = require('../../../lib/MetricsProducer');
 
 /**
 * Given that the largest object JSON from S3 is about 1.6 MB and adding some
@@ -49,12 +49,16 @@ class QueueProcessor {
      * @param {String} repConfig.queueProcessor.retryTimeoutS -
      *   number of seconds before giving up retries of an entry
      *   replication
+     * @param {Object} mConfig - metrics configuration
      */
-    constructor(zkConfig, sourceConfig, destConfig, repConfig) {
+    constructor(zkConfig, sourceConfig, destConfig, repConfig, mConfig) {
         this.zkConfig = zkConfig;
         this.sourceConfig = sourceConfig;
         this.destConfig = destConfig;
         this.repConfig = repConfig;
+        this.mConfig = mConfig;
+
+        this._mProducer = null;
 
         this.logger = new Logger('Backbeat:Replication:QueueProcessor');
 
@@ -100,19 +104,29 @@ class QueueProcessor {
     }
 
     start() {
-        const consumer = new BackbeatConsumer({
-            zookeeper: { connectionString: this.zkConfig.connectionString },
-            topic: this.repConfig.topic,
-            groupId: this.repConfig.queueProcessor.groupId,
-            concurrency: this.repConfig.queueProcessor.concurrency,
-            queueProcessor: this.processKafkaEntry.bind(this),
-            fetchMaxBytes: CONSUMER_FETCH_MAX_BYTES,
-        });
-        consumer.on('error', () => {});
-        consumer.subscribe();
+        const mProducer = new MetricsProducer(this.zkConfig, this.mConfig);
+        mProducer.setupProducer(err => {
+            if (err) {
+                this.logger.error('error starting queue processor', {
+                    error: err,
+                });
+                return;
+            }
+            this._mProducer = mProducer;
+            const consumer = new BackbeatConsumer({
+                zookeeper: { connectionString: this.zkConfig.connectionString },
+                topic: this.repConfig.topic,
+                groupId: this.repConfig.queueProcessor.groupId,
+                concurrency: this.repConfig.queueProcessor.concurrency,
+                queueProcessor: this.processKafkaEntry.bind(this),
+                fetchMaxBytes: CONSUMER_FETCH_MAX_BYTES,
+            });
+            consumer.on('error', () => {});
+            consumer.subscribe();
 
-        this.logger.info('queue processor is ready to consume ' +
-                         'replication entries');
+            this.logger.info('queue processor is ready to consume ' +
+                             'replication entries');
+        });
     }
 
     /**
@@ -132,6 +146,28 @@ class QueueProcessor {
                               { error: sourceEntry.error });
             return process.nextTick(() => done(errors.InternalError));
         }
+
+        // NOTE: Thing to note is that we are not batching here
+        // This is why I am publishing for producer metrics in
+        // ReplicationQueuePopulator.filter
+
+        // NOTE: Add Metrics
+        const dataBytes = 100;
+        const mdBytes = 100; // sourceEntry.objMd
+        const bucket = sourceEntry.getBucket();
+        const ext = 'replication';
+        const type = 'type';  // sourceEntry.getReplicationStorageClass ?
+
+        this._mProducer.publish('sub', dataBytes, mdBytes, bucket, ext, type,
+        err => {
+            if (err) {
+                this.logger.error('error publishing entry', {
+                    error: err,
+                    method: 'QueueProcessor.start',
+                });
+            }
+        });
+
         return this.taskScheduler.push({
             task: sourceEntry.getReplicationStorageType() === 'aws_s3' ?
                 new MultipleBackendTask(this) : new QueueProcessorTask(this),

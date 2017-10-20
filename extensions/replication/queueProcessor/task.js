@@ -9,10 +9,11 @@ const zkConfig = config.zookeeper;
 const repConfig = config.extensions.replication;
 const sourceConfig = repConfig.source;
 const destConfig = repConfig.destination;
+const mConfig = config.metrics;
 
 const queueProcessor = new QueueProcessor(zkConfig,
                                           sourceConfig, destConfig,
-                                          repConfig);
+                                          repConfig, mConfig);
 
 werelogs.configure({ level: config.log.logLevel,
     dump: config.log.dumpLevel });

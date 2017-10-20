@@ -34,6 +34,9 @@ const joiSchema = {
         }),
     },
     log: logJoi,
+    metrics: {
+        topic: joi.string().required(),
+    },
     extensions: {
         replication: {
             source: {
