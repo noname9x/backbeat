@@ -63,6 +63,13 @@ const joiSchema = {
             },
         },
     },
+    redis: {
+        host: joi.string().required(),
+        port: joi.number().required(),
+        keepAlive: joi.number().default(3000),
+        enableReadyCheck: joi.boolean().default(true),
+        enableOfflineQueue: joi.boolean().default(false),
+    },
 };
 
 module.exports = joiSchema;

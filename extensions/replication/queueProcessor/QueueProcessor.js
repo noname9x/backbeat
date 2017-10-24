@@ -50,13 +50,16 @@ class QueueProcessor {
      *   number of seconds before giving up retries of an entry
      *   replication
      * @param {Object} mConfig - metrics configuration
+     * @param {Object} redisConfig - redis configurations
      */
-    constructor(zkConfig, sourceConfig, destConfig, repConfig, mConfig) {
+    constructor(zkConfig, sourceConfig, destConfig, repConfig, mConfig,
+    redisConfig) {
         this.zkConfig = zkConfig;
         this.sourceConfig = sourceConfig;
         this.destConfig = destConfig;
         this.repConfig = repConfig;
         this.mConfig = mConfig;
+        this.redisConfig = redisConfig;
 
         this._mProducer = null;
 
@@ -120,9 +123,32 @@ class QueueProcessor {
                 concurrency: this.repConfig.queueProcessor.concurrency,
                 queueProcessor: this.processKafkaEntry.bind(this),
                 fetchMaxBytes: CONSUMER_FETCH_MAX_BYTES,
+                mConfig: this.mConfig,
             });
             consumer.on('error', () => {});
             consumer.subscribe();
+
+            consumer.on('sendMetrics', data => {
+                // data = { ops, bytes }
+                const batchSize = this._mProducer.getBatch();
+                this._mProducer.send([], err => {
+                    if (err) {
+                        this.logger.error('error publishing metrics-specific '
+                        + 'entries from log to topic', {
+                            method: 'QueueProcessor.start',
+                            topic: this.mConfig.topic,
+                            entryCount: batchSize,
+                            error: err,
+                        });
+                    }
+                    this.logger.debug('entries published successfully to '
+                    + 'topic', {
+                        method: 'QueueProcessor.start',
+                        topic: this.mConfig.topic,
+                        entryCount: batchSize,
+                    });
+                });
+            });
 
             this.logger.info('queue processor is ready to consume ' +
                              'replication entries');
@@ -147,34 +173,33 @@ class QueueProcessor {
             return process.nextTick(() => done(errors.InternalError));
         }
 
-        // NOTE: Thing to note is that we are not batching here
-        // This is why I am publishing for producer metrics in
-        // ReplicationQueuePopulator.filter
+        // TODO: If type === 'metrics' && op === 'processed'
+        // Skip the below or we will continue processing already
+        // processed entries within metrics
 
-        // NOTE: Add Metrics
-        const dataBytes = 100;
-        const mdBytes = 100; // sourceEntry.objMd
-        const bucket = sourceEntry.getBucket();
-        const ext = 'replication';
-        const type = 'type';  // sourceEntry.getReplicationStorageClass ?
-
-        this._mProducer.publish('sub', dataBytes, mdBytes, bucket, ext, type,
-        err => {
-            if (err) {
-                this.logger.error('error publishing entry', {
-                    error: err,
-                    method: 'QueueProcessor.start',
-                });
+        const task = (storageType => {
+            switch (storageType) {
+            case 'aws_s3':
+                return new MultipleBackendTask(this);
+            case 'metrics':
+                return this._mProducer;
+            default:
+                return new QueueProcessorTask(this);
             }
-        });
+        })(sourceEntry.getReplicationStorageType());
 
-        return this.taskScheduler.push({
-            task: sourceEntry.getReplicationStorageType() === 'aws_s3' ?
-                new MultipleBackendTask(this) : new QueueProcessorTask(this),
-            entry: sourceEntry,
-        },
+        return this.taskScheduler.push({ task, entry: sourceEntry },
         `${sourceEntry.getBucket()}/${sourceEntry.getObjectVersionedKey()}`,
         done);
+
+        // OLD CODE:
+        // return this.taskScheduler.push({
+        //     task: sourceEntry.getReplicationStorageType() === 'aws_s3' ?
+        //         new MultipleBackendTask(this) : new QueueProcessorTask(this),
+        //     entry: sourceEntry,
+        // },
+        // `${sourceEntry.getBucket()}/${sourceEntry.getObjectVersionedKey()}`,
+        // done);
     }
 }
 

@@ -9,6 +9,10 @@ class ReplicationQueuePopulator extends QueuePopulatorExtension {
         super(params);
         this.repConfig = params.extConfig;
         this.mConfig = params.mConfig;
+
+        // metrics
+        this._opCount = 0;
+        this._bytesCount = 0;
     }
 
     filter(entry) {
@@ -21,19 +25,17 @@ class ReplicationQueuePopulator extends QueuePopulatorExtension {
             return;
         }
 
+        const entryBytes = value.location.reduce((sum, item) =>
+            sum + item.size, 0);
+        this._bytesCount += entryBytes;
+        this._opCount++;
+
         this.publish(this.repConfig.topic,
                      `${entry.bucket}/${entry.key}`,
                      JSON.stringify(entry));
 
-        // TODO: data I'm not sure about
-        // how to determine metadata bytes?
-        // how to calculate bytes?
-        // https://github.com/miktam/sizeof
-        const dataBytes = 100;
-        const mdBytes = 100;
-
-        const metricsEntry = MetricsModel.serialize('add', dataBytes, mdBytes,
-            entry.bucket, this.name, entry.type);
+        const metricsEntry = MetricsModel.serialize('queued', entryBytes,
+            entry.bucket, this.name);
 
         this.publish(this.mConfig.topic,
                      `${entry.bucket}-metric`,

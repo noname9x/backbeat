@@ -10,10 +10,11 @@ const repConfig = config.extensions.replication;
 const sourceConfig = repConfig.source;
 const destConfig = repConfig.destination;
 const mConfig = config.metrics;
+const redisConfig = config.redis;
 
 const queueProcessor = new QueueProcessor(zkConfig,
                                           sourceConfig, destConfig,
-                                          repConfig, mConfig);
+                                          repConfig, mConfig, redisConfig);
 
 werelogs.configure({ level: config.log.logLevel,
     dump: config.log.dumpLevel });
