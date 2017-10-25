@@ -18,6 +18,8 @@ class EchoBucket extends BackbeatTask {
             retryTimeoutS: qpState.repConfig.queueProcessor.retryTimeoutS,
         });
         Object.assign(this, qpState);
+        this._bidirectionalReplication =
+            qpState.repConfig.queueProcessor.bidirectionalReplication;
     }
 
     _getSourceAccountCreds(sourceEntry, log, done) {
@@ -172,6 +174,7 @@ class EchoBucket extends BackbeatTask {
                     },
                     retryTimeoutS: this.repConfig.queueProcessor.retryTimeoutS,
                     skipSourceBucketCreation: true,
+                    bidirectionalReplication: this._bidirectionalReplication,
                     log,
                 });
                 setupReplication.setupReplication(done);

@@ -16,42 +16,6 @@ const trustPolicy = {
     ],
 };
 
-function _buildResourcePolicy(source, target) {
-    return {
-        Version: '2012-10-17',
-        Statement: [
-            {
-                Effect: 'Allow',
-                Action: [
-                    's3:GetObjectVersion',
-                    's3:GetObjectVersionAcl',
-                ],
-                Resource: [
-                    `arn:aws:s3:::${source}/*`,
-                ],
-            },
-            {
-                Effect: 'Allow',
-                Action: [
-                    's3:ListBucket',
-                    's3:GetReplicationConfiguration',
-                ],
-                Resource: [
-                    `arn:aws:s3:::${source}`,
-                ],
-            },
-            {
-                Effect: 'Allow',
-                Action: [
-                    's3:ReplicateObject',
-                    's3:ReplicateDelete',
-                ],
-                Resource: `arn:aws:s3:::${target}/*`,
-            },
-        ],
-    };
-}
-
 function _setupS3Client(transport, endpoint, credentials) {
     return new S3({
         endpoint: `${endpoint}`,
@@ -106,17 +70,21 @@ class SetupReplication extends BackbeatTask {
      * @param {Boolean} [params.skipSourceBucketCreation=false] - can
      *   be set to true if the source bucket is guaranteed to exist to
      *   spare a request
+     * @param {Boolean} [params.bidirectionalReplication=false] - true
+     *   to enable replication from destination to source as well
      * @param {Object} params.log - werelogs request logger object
      */
     constructor(params) {
         const { source, target, checkSanity,
-                retryTimeoutS, skipSourceBucketCreation, log } = params;
+                retryTimeoutS, skipSourceBucketCreation,
+                bidirectionalReplication, log } = params;
         super({ retryTimeoutS });
         this._log = log;
         this._sourceBucket = source.bucket;
         this._targetBucket = target.bucket;
         this._checkSanityEnabled = checkSanity || false;
         this._skipSourceBucketCreation = skipSourceBucketCreation || false;
+        this._bidirectionalReplication = bidirectionalReplication || false;
         this.destHosts = target.hosts;
         const destHost = this.destHosts.pickHost();
         // XXX use target port through nginx gateway
@@ -382,8 +350,7 @@ class SetupReplication extends BackbeatTask {
 
     _createPolicyOnce(where, cb) {
         const params = {
-            PolicyDocument: JSON.stringify(
-                _buildResourcePolicy(this._sourceBucket, this._targetBucket)),
+            PolicyDocument: JSON.stringify(this._buildResourcePolicy(where)),
             PolicyName: `bb-replication-${Date.now()}`,
         };
         this._iamClients[where].createPolicy(params, (err, res) => {
@@ -404,6 +371,48 @@ class SetupReplication extends BackbeatTask {
             });
             return cb(null, res);
         });
+    }
+
+    _buildResourcePolicy(where) {
+        const policy = {
+            Version: '2012-10-17',
+            Statement: [],
+        };
+        const bucket = where === 'source' ? this._sourceBucket :
+                  this._targetBucket;
+        const allowSourceActions =
+                  where === 'source' || this._bidirectionalReplication;
+        const allowTargetActions =
+                  where === 'target' || this._bidirectionalReplication;
+        if (allowSourceActions) {
+            policy.Statement.push({
+                Effect: 'Allow',
+                Action: [
+                    's3:ListBucket',
+                    's3:GetReplicationConfiguration',
+                ],
+                Resource: [`arn:aws:s3:::${bucket}`],
+            });
+            policy.Statement.push({
+                Effect: 'Allow',
+                Action: [
+                    's3:GetObjectVersion',
+                    's3:GetObjectVersionAcl',
+                ],
+                Resource: [`arn:aws:s3:::${bucket}/*`],
+            });
+        }
+        if (allowTargetActions) {
+            policy.Statement.push({
+                Effect: 'Allow',
+                Action: [
+                    's3:ReplicateObject',
+                    's3:ReplicateDelete',
+                ],
+                Resource: [`arn:aws:s3:::${bucket}/*`],
+            });
+        }
+        return policy;
     }
 
     _enableVersioning(where, cb) {
@@ -482,33 +491,45 @@ class SetupReplication extends BackbeatTask {
         });
     }
 
-    _enableReplication(roleArns, cb) {
-        this.retry({
+    _enableReplication(sourceRoleArn, targetRoleArn, where, cb) {
+        if (where === 'target' && !this._bidirectionalReplication) {
+            return process.nextTick(cb);
+        }
+        return this.retry({
             actionDesc: 'enable bucket replication',
             logFields: {},
-            actionFunc: done => this._enableReplicationOnce(roleArns, done),
+            actionFunc: done => this._enableReplicationOnce(
+                sourceRoleArn, targetRoleArn, where, done),
             shouldRetryFunc: err => err.retryable,
             log: this._log,
         }, cb);
     }
 
-    _enableReplicationOnce(roleArns, cb) {
+    _enableReplicationOnce(sourceRoleArn, targetRoleArn, where, cb) {
+        const sourceBucket = where === 'source' ? this._sourceBucket :
+            this._targetBucket;
+        const targetBucket = where === 'source' ? this._targetBucket :
+            this._sourceBucket;
+        const roleArns = where === 'source' ?
+                  `${sourceRoleArn},${targetRoleArn}` :
+                  `${targetRoleArn},${sourceRoleArn}`;
         const params = {
-            Bucket: this._sourceBucket,
+            Bucket: sourceBucket,
             ReplicationConfiguration: {
                 Role: roleArns,
                 Rules: [{
                     Destination: {
-                        Bucket: `arn:aws:s3:::${this._targetBucket}`,
+                        Bucket: `arn:aws:s3:::${targetBucket}`,
                     },
                     Prefix: '',
                     Status: 'Enabled',
                 }],
             },
         };
-        this._s3Clients.source.putBucketReplication(params, (err, res) => {
+        this._s3Clients[where].putBucketReplication(params, (err, res) => {
             if (err) {
                 this._log.error('error enabling replication', {
+                    bucket: sourceBucket,
                     errCode: err.code,
                     error: err.message,
                     method: 'SetupReplication._enableReplication',
@@ -541,7 +562,6 @@ class SetupReplication extends BackbeatTask {
                 targetRole = data.targetRole.Role;
                 sourcePolicyArn = data.sourcePolicy.Policy.Arn;
                 targetPolicyArn = data.targetPolicy.Policy.Arn;
-                const roleArns = `${sourceRole.Arn},${targetRole.Arn}`;
                 async.series([
                     done => this._enableVersioning('source', done),
                     done => this._enableVersioning('target', done),
@@ -549,7 +569,11 @@ class SetupReplication extends BackbeatTask {
                         sourceRole.RoleName, 'source', done),
                     done => this._attachResourcePolicy(targetPolicyArn,
                         targetRole.RoleName, 'target', done),
-                    done => this._enableReplication(roleArns, done),
+                    done => this._enableReplication(
+                        sourceRole.Arn, targetRole.Arn, 'source', done),
+                    // no-op when bidirectional is disabled
+                    done => this._enableReplication(
+                        sourceRole.Arn, targetRole.Arn, 'target', done),
                 ], next);
             },
             (args, next) => (this._checkSanityEnabled ?
