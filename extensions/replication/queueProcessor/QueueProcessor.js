@@ -210,7 +210,9 @@ class QueueProcessor {
             // FIXME support multiple destinations
             if (this.destConfig.bootstrapList.length > 0 &&
                 this.destConfig.bootstrapList[0].echo) {
-                task = new EchoBucket(this);
+                const bidirectional = this.destConfig
+                          .bootstrapList[0].bidirectionalEcho;
+                task = new EchoBucket(this, { bidirectional });
             }
             // ignore bucket entry if echo mode disabled
         } else if (sourceEntry instanceof ObjectQueueEntry) {

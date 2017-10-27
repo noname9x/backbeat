@@ -67,7 +67,6 @@ const joiSchema = {
                 retryTimeoutS: joi.number().default(300),
                 // versioning can support out of order updates
                 concurrency: joi.number().greater(0).default(10),
-                bidirectionalReplication: joi.boolean().default(false),
             },
         },
     },

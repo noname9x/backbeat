@@ -11,15 +11,18 @@ class EchoBucket extends BackbeatTask {
      *
      * @constructor
      * @param {QueueProcessor} qp - queue processor instance
+     * @param {object} [options] - options object
+     * @param {boolean} [options.bidirectional] - true to enable
+     *   bidirectional echo mode: destination bucket will be
+     *   configured to sync objects to the source as well
      */
-    constructor(qp) {
+    constructor(qp, options) {
         const qpState = qp.getStateVars();
         super({
             retryTimeoutS: qpState.repConfig.queueProcessor.retryTimeoutS,
         });
         Object.assign(this, qpState);
-        this._bidirectionalReplication =
-            qpState.repConfig.queueProcessor.bidirectionalReplication;
+        this._bidirectional = (options && options.bidirectional) || false;
     }
 
     _getSourceAccountCreds(sourceEntry, log, done) {
@@ -174,7 +177,7 @@ class EchoBucket extends BackbeatTask {
                     },
                     retryTimeoutS: this.repConfig.queueProcessor.retryTimeoutS,
                     skipSourceBucketCreation: true,
-                    bidirectionalReplication: this._bidirectionalReplication,
+                    bidirectional: this._bidirectional,
                     log,
                 });
                 setupReplication.setupReplication(done);

@@ -70,21 +70,21 @@ class SetupReplication extends BackbeatTask {
      * @param {Boolean} [params.skipSourceBucketCreation=false] - can
      *   be set to true if the source bucket is guaranteed to exist to
      *   spare a request
-     * @param {Boolean} [params.bidirectionalReplication=false] - true
-     *   to enable replication from destination to source as well
+     * @param {Boolean} [params.bidirectional=false] - true to enable
+     *   replication from destination to source as well
      * @param {Object} params.log - werelogs request logger object
      */
     constructor(params) {
         const { source, target, checkSanity,
                 retryTimeoutS, skipSourceBucketCreation,
-                bidirectionalReplication, log } = params;
+                bidirectional, log } = params;
         super({ retryTimeoutS });
         this._log = log;
         this._sourceBucket = source.bucket;
         this._targetBucket = target.bucket;
         this._checkSanityEnabled = checkSanity || false;
         this._skipSourceBucketCreation = skipSourceBucketCreation || false;
-        this._bidirectionalReplication = bidirectionalReplication || false;
+        this._bidirectional = bidirectional || false;
         this.destHosts = target.hosts;
         const destHost = this.destHosts.pickHost();
         // XXX use target port through nginx gateway
@@ -380,10 +380,8 @@ class SetupReplication extends BackbeatTask {
         };
         const bucket = where === 'source' ? this._sourceBucket :
                   this._targetBucket;
-        const allowSourceActions =
-                  where === 'source' || this._bidirectionalReplication;
-        const allowTargetActions =
-                  where === 'target' || this._bidirectionalReplication;
+        const allowSourceActions = where === 'source' || this._bidirectional;
+        const allowTargetActions = where === 'target' || this._bidirectional;
         if (allowSourceActions) {
             policy.Statement.push({
                 Effect: 'Allow',
@@ -492,7 +490,7 @@ class SetupReplication extends BackbeatTask {
     }
 
     _enableReplication(sourceRoleArn, targetRoleArn, where, cb) {
-        if (where === 'target' && !this._bidirectionalReplication) {
+        if (where === 'target' && !this._bidirectional) {
             return process.nextTick(cb);
         }
         return this.retry({
