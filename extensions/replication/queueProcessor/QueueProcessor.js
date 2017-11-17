@@ -32,9 +32,9 @@ class QueueProcessor {
      * entries to a target S3 endpoint.
      *
      * @constructor
-     * @param {Object} zkConfig - zookeeper configuration object
-     * @param {string} zkConfig.connectionString - zookeeper connection string
-     *   as "host:port[/chroot]"
+     * @param {Object} kafkaConfig - kafka configuration object
+     * @param {string} kafkaConfig.hosts - list of kafka brokers
+     *   as "host:port[,host:port...]"
      * @param {Object} sourceConfig - source S3 configuration
      * @param {Object} sourceConfig.s3 - s3 endpoint configuration object
      * @param {Object} sourceConfig.auth - authentication info on source
@@ -50,8 +50,8 @@ class QueueProcessor {
      *   number of seconds before giving up retries of an entry
      *   replication
      */
-    constructor(zkConfig, sourceConfig, destConfig, repConfig) {
-        this.zkConfig = zkConfig;
+    constructor(kafkaConfig, sourceConfig, destConfig, repConfig) {
+        this.kafkaConfig = kafkaConfig;
         this.sourceConfig = sourceConfig;
         this.destConfig = destConfig;
         this.repConfig = repConfig;
@@ -103,7 +103,7 @@ class QueueProcessor {
 
     start() {
         const consumer = new BackbeatConsumer({
-            zookeeper: { connectionString: this.zkConfig.connectionString },
+            kafka: { hosts: this.kafkaConfig.hosts },
             topic: this.repConfig.topic,
             groupId: this.repConfig.queueProcessor.groupId,
             concurrency: this.repConfig.queueProcessor.concurrency,
