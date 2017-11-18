@@ -42,6 +42,7 @@
     "werelogs": "scality/werelogs"
   },
   "devDependencies": {
+    "ioredis": "^3.2.1",
     "mocha": "^3.3.0"
   }
 }
