@@ -128,6 +128,9 @@ class QueueProcessor {
      * @return {undefined}
      */
     processKafkaEntry(kafkaEntry, done) {
+        if (kafkaEntry.key && kafkaEntry.key.startsWith('deephealthcheck')) {
+            return process.nextTick(() => done());
+        }
         const sourceEntry = QueueEntry.createFromKafkaEntry(kafkaEntry);
         if (sourceEntry.error) {
             this.logger.error('error processing source entry',
