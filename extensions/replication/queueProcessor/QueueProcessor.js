@@ -169,10 +169,8 @@ class QueueProcessor extends EventEmitter {
                     error: err,
                 });
             });
-            producer.createTopic(() => {
-                this.replicationStatusProducer = producer;
-                done();
-            });
+            this.replicationStatusProducer = producer;
+            done();
         });
     }
 
