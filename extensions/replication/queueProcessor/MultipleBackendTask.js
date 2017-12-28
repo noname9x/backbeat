@@ -127,7 +127,19 @@ class MultipleBackendTask extends QueueProcessorTask {
             return doneOnce(err);
         });
         const incomingMsg = sourceReq.createReadStream();
+        const destReq = this.backbeatSource.multipleBackendPutMPUPart({
+            Bucket: destEntry.getBucket(),
+            Key: destEntry.getObjectKey(),
+            ContentLength: partObj.getPartSize(),
+            StorageType: destEntry.getReplicationStorageType(),
+            StorageClass: destEntry.getReplicationStorageClass(),
+            PartNumber: partObj.getPartNumber(),
+            UploadId: uploadId,
+            Body: incomingMsg,
+        });
+        attachReqUids(destReq, log);
         incomingMsg.on('error', err => {
+            destReq.abort();
             if (err.statusCode === 404) {
                 return doneOnce(errors.ObjNotFound);
             }
@@ -144,17 +156,6 @@ class MultipleBackendTask extends QueueProcessorTask {
         });
         log.debug('putting data', { entry: destEntry.getLogInfo() });
 
-        const destReq = this.backbeatSource.multipleBackendPutMPUPart({
-            Bucket: destEntry.getBucket(),
-            Key: destEntry.getObjectKey(),
-            ContentLength: partObj.getPartSize(),
-            StorageType: destEntry.getReplicationStorageType(),
-            StorageClass: destEntry.getReplicationStorageClass(),
-            PartNumber: partObj.getPartNumber(),
-            UploadId: uploadId,
-            Body: incomingMsg,
-        });
-        attachReqUids(destReq, log);
         return destReq.send((err, data) => {
             if (err) {
                 // eslint-disable-next-line no-param-reassign
@@ -318,7 +319,28 @@ class MultipleBackendTask extends QueueProcessorTask {
             return doneOnce(err);
         });
         const incomingMsg = sourceReq.createReadStream();
+        const destReq = this.backbeatSource.multipleBackendPutObject({
+            Bucket: destEntry.getBucket(),
+            Key: destEntry.getObjectKey(),
+            CanonicalID: destEntry.getOwnerId(),
+            ContentLength: part ? partObj.getPartSize() :
+                destEntry.getContentLength(),
+            ContentMD5: part ? partObj.getPartETag() :
+                destEntry.getContentMd5(),
+            StorageType: destEntry.getReplicationStorageType(),
+            StorageClass: destEntry.getReplicationStorageClass(),
+            VersionId: destEntry.getEncodedVersionId(),
+            UserMetaData: sourceEntry.getUserMetadata(),
+            ContentType: sourceEntry.getContentType() || undefined,
+            CacheControl: sourceEntry.getCacheControl() || undefined,
+            ContentDisposition:
+                sourceEntry.getContentDisposition() || undefined,
+            ContentEncoding: sourceEntry.getContentEncoding() || undefined,
+            Body: incomingMsg,
+        });
+        attachReqUids(destReq, log);
         incomingMsg.on('error', err => {
+            destReq.abort();
             if (err.statusCode === 404) {
                 log.error('the source object was not found', {
                     method: 'MultipleBackendTask._getAndPutPartOnce',
@@ -342,26 +364,6 @@ class MultipleBackendTask extends QueueProcessorTask {
             return doneOnce(err);
         });
         log.debug('putting data', { entry: destEntry.getLogInfo() });
-        const destReq = this.backbeatSource.multipleBackendPutObject({
-            Bucket: destEntry.getBucket(),
-            Key: destEntry.getObjectKey(),
-            CanonicalID: destEntry.getOwnerId(),
-            ContentLength: part ? partObj.getPartSize() :
-                destEntry.getContentLength(),
-            ContentMD5: part ? partObj.getPartETag() :
-                destEntry.getContentMd5(),
-            StorageType: destEntry.getReplicationStorageType(),
-            StorageClass: destEntry.getReplicationStorageClass(),
-            VersionId: destEntry.getEncodedVersionId(),
-            UserMetaData: sourceEntry.getUserMetadata(),
-            ContentType: sourceEntry.getContentType() || undefined,
-            CacheControl: sourceEntry.getCacheControl() || undefined,
-            ContentDisposition:
-                sourceEntry.getContentDisposition() || undefined,
-            ContentEncoding: sourceEntry.getContentEncoding() || undefined,
-            Body: incomingMsg,
-        });
-        attachReqUids(destReq, log);
         return destReq.send((err, data) => {
             if (err) {
                 // eslint-disable-next-line no-param-reassign

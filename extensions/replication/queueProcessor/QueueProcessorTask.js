@@ -346,7 +346,17 @@ class QueueProcessorTask {
             return doneOnce(err);
         });
         const incomingMsg = sourceReq.createReadStream();
+        const destReq = this.backbeatDest.putData({
+            Bucket: destEntry.getBucket(),
+            Key: destEntry.getObjectKey(),
+            CanonicalID: destEntry.getOwnerId(),
+            ContentLength: partObj.getPartSize(),
+            ContentMD5: partObj.getPartETag(),
+            Body: incomingMsg,
+        });
+        attachReqUids(destReq, log);
         incomingMsg.on('error', err => {
+            destReq.abort();
             if (err.statusCode === 404) {
                 return doneOnce(errors.ObjNotFound);
             }
@@ -362,15 +372,6 @@ class QueueProcessorTask {
             return doneOnce(err);
         });
         log.debug('putting data', { entry: destEntry.getLogInfo(), part });
-        const destReq = this.backbeatDest.putData({
-            Bucket: destEntry.getBucket(),
-            Key: destEntry.getObjectKey(),
-            CanonicalID: destEntry.getOwnerId(),
-            ContentLength: partObj.getPartSize(),
-            ContentMD5: partObj.getPartETag(),
-            Body: incomingMsg,
-        });
-        attachReqUids(destReq, log);
         return destReq.send((err, data) => {
             if (err) {
                 // eslint-disable-next-line no-param-reassign
