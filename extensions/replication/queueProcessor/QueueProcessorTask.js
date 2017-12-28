@@ -329,7 +329,18 @@ class QueueProcessorTask {
             PartNumber: partNumber,
         });
         attachReqUids(sourceReq, log);
+        const incomingMsg = sourceReq.createReadStream();
+        const destReq = this.backbeatDest.putData({
+            Bucket: destEntry.getBucket(),
+            Key: destEntry.getObjectKey(),
+            CanonicalID: destEntry.getOwnerId(),
+            ContentLength: partObj.getPartSize(),
+            ContentMD5: partObj.getPartETag(),
+            Body: incomingMsg,
+        });
+        attachReqUids(destReq, log);
         sourceReq.on('error', err => {
+            destReq.abort();
             // eslint-disable-next-line no-param-reassign
             err.origin = 'source';
             if (err.statusCode === 404) {
@@ -345,16 +356,7 @@ class QueueProcessorTask {
                     httpStatus: err.statusCode });
             return doneOnce(err);
         });
-        const incomingMsg = sourceReq.createReadStream();
-        const destReq = this.backbeatDest.putData({
-            Bucket: destEntry.getBucket(),
-            Key: destEntry.getObjectKey(),
-            CanonicalID: destEntry.getOwnerId(),
-            ContentLength: partObj.getPartSize(),
-            ContentMD5: partObj.getPartETag(),
-            Body: incomingMsg,
-        });
-        attachReqUids(destReq, log);
+
         incomingMsg.on('error', err => {
             destReq.abort();
             if (err.statusCode === 404) {
