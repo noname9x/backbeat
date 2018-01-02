@@ -123,7 +123,7 @@ class MultipleBackendTask extends QueueProcessorTask {
         });
         attachReqUids(destReq, log);
         sourceReq.on('error', err => {
-            destReq.abort();
+            // destReq.abort();
             // eslint-disable-next-line no-param-reassign
             err.origin = 'source';
             if (err.statusCode === 404) {
@@ -140,7 +140,7 @@ class MultipleBackendTask extends QueueProcessorTask {
             return doneOnce(err);
         });
         incomingMsg.on('error', err => {
-            destReq.abort();
+            // destReq.abort();
             if (err.statusCode === 404) {
                 return doneOnce(errors.ObjNotFound);
             }
@@ -318,7 +318,7 @@ class MultipleBackendTask extends QueueProcessorTask {
         attachReqUids(destReq, log);
 
         sourceReq.on('error', err => {
-            destReq.abort();
+            // destReq.abort();
             // eslint-disable-next-line no-param-reassign
             err.origin = 'source';
             if (err.statusCode === 404) {
@@ -344,7 +344,7 @@ class MultipleBackendTask extends QueueProcessorTask {
         });
 
         incomingMsg.on('error', err => {
-            destReq.abort();
+            // destReq.abort();
             if (err.statusCode === 404) {
                 log.error('the source object was not found', {
                     method: 'MultipleBackendTask._getAndPutPartOnce',
