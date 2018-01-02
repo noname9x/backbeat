@@ -340,7 +340,19 @@ class QueueProcessorTask {
         });
         attachReqUids(destReq, log);
         sourceReq.on('error', err => {
+            process.stdout.write('in QPT._getAndPutPartOnce sourceReq err\n');
+            process.stdout.write(`destReq: ${destReq}\n`);
             destReq.abort();
+            process.stdout.write(`[AFTER] abort destReq: ${destReq}\n`);
+            process.stdout.write(`sourceReq: ${sourceReq}\n`);
+            process.stdout.write(`error: ${err}\n`);
+            process.stdout.write(`incomingMsg: ${incomingMsg}\n`);
+            if (incomingMsg) {
+                incomingMsg.close();
+                process.stdout.write(`[AFTER] incomingMsg: ${incomingMsg}\n`);
+            }
+            // sourceReq.close();
+
             // eslint-disable-next-line no-param-reassign
             err.origin = 'source';
             if (err.statusCode === 404) {
@@ -358,7 +370,16 @@ class QueueProcessorTask {
         });
 
         incomingMsg.on('error', err => {
-            destReq.abort();
+            // destReq.abort();
+            process.stdout.write('in QPT._getAndPutPartOnce incMsg on err');
+            process.stdout.write(`incomingMsg: ${incomingMsg}\n`);
+            process.stdout.write(`error: ${err}\n`);
+            process.stdout.write(`sourceReq: ${sourceReq}\n`);
+            // sourceReq.close();
+            if (incomingMsg) {
+                incomingMsg.close();
+                process.stdout.write(`[AFTER] incomingMsg: ${incomingMsg}\n`);
+            }
             if (err.statusCode === 404) {
                 return doneOnce(errors.ObjNotFound);
             }
