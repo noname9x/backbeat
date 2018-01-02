@@ -32,6 +32,12 @@ function getObjInfo(obj) {
 
 function getObjName(obj) {
     process.stdout.write(obj.constructor.name);
+    process.stdout.write('\n---\n');
+}
+
+function logg(str) {
+    process.stdout.write(str);
+    process.stdout.write('\n');
 }
 /* eslint-enable */
 
@@ -87,7 +93,11 @@ class QueueProcessorTask {
 
         function _handleRes(...args) {
             const err = args[0];
+            logg('==========================');
+            logg(`nbRetries: ${nbRetries}`);
+            logg(`err: ${err}`);
             if (!err) {
+                logg('no err');
                 if (nbRetries > 0) {
                     log.info(`succeeded to ${actionDesc} after retries`,
                              { entry: entry.getLogInfo(), nbRetries });
@@ -95,10 +105,12 @@ class QueueProcessorTask {
                 return done(...args);
             }
             if (!shouldRetryFunc(err)) {
+                logg('!shouldRetryFunc');
                 // somehow close requests here
                 return done(err);
             }
             if (onRetryFunc) {
+                logg('onRetryFunc');
                 onRetryFunc(err);
             }
 
@@ -110,6 +122,7 @@ class QueueProcessorTask {
                         nbRetries,
                         retryTotalMs: `${now - startTime}` });
                 // somehow close requests here
+                logg('now > retryTimeoutS');
                 return done(err);
             }
             const retryDelayMs = backoffCtx.duration();
@@ -117,6 +130,8 @@ class QueueProcessorTask {
                 { entry: entry.getLogInfo(),
                     nbRetries, retryDelay: `${retryDelayMs}ms` });
             nbRetries += 1;
+            logg('reached the end');
+            logg('+++++++++++++++++++++++');
             return setTimeout(() => actionFunc(_handleRes), retryDelayMs);
         }
         actionFunc(_handleRes);
@@ -358,35 +373,18 @@ class QueueProcessorTask {
         });
         attachReqUids(destReq, log);
         sourceReq.on('error', err => {
-            process.stdout.write('in QPT._getAndPutPartOnce sourceReq err\n');
+            // process.stdout.write('in QPT._getAndPutPartOnce sourceReq err\n');
 
-            process.stdout.write('destReq: ');
-            getObjInfo(destReq);
-
-            destReq.abort();
-            destReq.close();
-            if (destReq) {
-                process.stdout.write('[AFTER] abort destReq: ');
-                getObjInfo(destReq);
-            } else {
-                process.stdout.write('[AFTER] abort destReq: UNDEFINED');
-            }
-
-            // process.stdout.write('sourceReq: ');
-            // getObjInfo(sourceReq);
-            // process.stdout.write(`error: ${err}\n`);
-            // process.stdout.write('incomingMsg: ');
-            // getObjInfo(incomingMsg);
-            // if (incomingMsg) {
-            //     process.stdout.write('incMsg exists: ');
-            //     getObjInfo(incomingMsg);
-            //     incomingMsg.destroy();
-            //     process.stdout.write('[AFTER] incomingMsg: ');
-            //     getObjInfo(incomingMsg);
-            // } else {
-            //     process.stdout.write('[AFTER] incomingMsg: UNDEFINED');
+            // if (!destReq.aborted) {
+            //     destReq.abort();
             // }
-            // sourceReq.close();
+            // if (incomingMsg) {
+            //     process.stdout.write('incomingMsg:\n');
+            //     getObjName(incomingMsg);
+            //     incomingMsg.removeAllListeners();
+            //     incomingMsg.end();
+            //     process.stdout.write('done..\n');
+            // }
 
             // eslint-disable-next-line no-param-reassign
             err.origin = 'source';
@@ -405,35 +403,14 @@ class QueueProcessorTask {
         });
 
         incomingMsg.on('error', err => {
-            process.stdout.write('in QPT._getAndPutPartOnce incMsg on err\n');
+            // process.stdout.write('in QPT._getAndPutPartOnce incMsg on err\n');
 
-            destReq.abort();
-            destReq.close();
-
-            if (destReq) {
-                process.stdout.write('[AFTER] abort destReq: ');
-                getObjInfo(destReq);
-            } else {
-                process.stdout.write('[AFTER] abort destReq: UNDEFINED');
+            if (!destReq.aborted) {
+                destReq.abort();
             }
-
-
-            // process.stdout.write('incomingMsg: ');
-            // getObjInfo(incomingMsg);
-            // process.stdout.write(`error: ${err}\n`);
-            // process.stdout.write('sourceReq: ');
-            // getObjInfo(sourceReq);
-
-            // sourceReq.close();
-            // if (incomingMsg) {
-            //     process.stdout.write('incMsg exists: ');
-            //     getObjInfo(incomingMsg);
-            //     incomingMsg.destroy();
-            //     process.stdout.write('[AFTER] incomingMsg: ');
-            //     getObjInfo(incomingMsg);
-            // } else {
-            //     process.stdout.write('[AFTER] incomingMsg: UNDEFINED');
-            // }
+            // incomingMsg.removeAllListeners();
+            // incomingMsg.end();
+            // process.stdout.write('done..\n');
 
             if (err.statusCode === 404) {
                 return doneOnce(errors.ObjNotFound);
@@ -454,6 +431,9 @@ class QueueProcessorTask {
             if (err) {
                 // eslint-disable-next-line no-param-reassign
                 err.origin = 'target';
+                getObjName(err);
+                getObjInfo(err);
+                process.stdout.write('---TEST ERR---');
                 log.error('an error occurred on putData to S3',
                     { method: 'QueueProcessor._getAndPutData',
                         entry: destEntry.getLogInfo(),
